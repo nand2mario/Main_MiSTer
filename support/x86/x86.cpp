@@ -38,6 +38,7 @@
 #include "../../fpga_io.h"
 #include "../../shmem.h"
 #include "../../ide.h"
+#include "../../menu.h"
 #include "x86_share.h"
 
 #define FDD0_BASE   0xF200
@@ -333,6 +334,45 @@ static int load_rom(const char* name, uint32_t mem_offset)
 	return 1;
 }
 
+static int load_rom_z386(const char* name, uint32_t ioctl_offset)
+{
+	fileTYPE f = {};
+	static uint8_t buf[4096];
+
+	fprintf(stderr, "BIOS: %s -> ioctl0 @ 0x%05X\n", name, ioctl_offset);
+	fflush(stderr);
+
+	if (!FileOpen(&f, name, 1))
+	{
+		fprintf(stderr, "BIOS: failed to open %s\n", name);
+		fflush(stderr);
+		return 0;
+	}
+
+	unsigned long bytes2send = f.size;
+	unsigned long size = bytes2send;
+
+	fprintf(stderr, "BIOS: opened %s size=%lu bytes\n", name, size);
+	fflush(stderr);
+
+	user_io_set_download(1, ioctl_offset);
+
+	while (bytes2send)
+	{
+		uint32_t chunk = (bytes2send > sizeof(buf)) ? sizeof(buf) : bytes2send;
+
+		FileReadAdv(&f, buf, chunk);
+		user_io_file_tx_data(buf, chunk);
+		ProgressMessage("Loading", f.name, size - bytes2send, size);
+		bytes2send -= chunk;
+	}
+
+	FileClose(&f);
+	fprintf(stderr, "BIOS: upload complete for %s\n", name);
+	fflush(stderr);
+	return 1;
+}
+
 #define FDD_TYPE_NONE 0
 #define FDD_TYPE_160  1
 #define FDD_TYPE_180  2
@@ -535,19 +575,72 @@ void x86_ide_set()
 
 void x86_init()
 {
+	fprintf(stderr, "DEBUG: x86_init() entry before reset status write\n");
+	fflush(stderr);
 	user_io_status_set("[0]", 1);
+	fprintf(stderr, "DEBUG: x86_init() after reset status write\n");
+	fflush(stderr);
 
 	const char *home = HomeDir();
 
 	if (is_x86())
 	{
-		// PC-DOS/MS-DOS/Win3.x/Win9x recognize 0xFF as free memory (UMA),
-		// otherwise it can be incorrectly interpreted as used by Option RAM (non-free).
-		mem_set(0xA0000, 0xFF, 0x60000); // Fill UMA (640 kb - 1 Mb) with 0xFF
-		mem_set(0xA0000, 0x00, 0x20000); // Clear Video RAM
-		mem_set(0xCE000, 0x00, 0x2000);  // Clear shr_rgn
-		load_rom(user_io_make_filepath(home, "boot1.rom"), 0xC0000); // Video BIOS ROM
-		load_rom(user_io_make_filepath(home, "boot0.rom"), 0xF0000); // BIOS ROM
+		if (is_z386())
+		{
+			char boot0[1024];
+			char boot1[1024];
+			fileTYPE bios_file = {};
+			uint32_t bios_offset = 0x30000;
+
+			fprintf(stderr, "Z386: entering x86_init()\n");
+			fprintf(stderr, "Z386: HomeDir = %s\n", home ? home : "(null)");
+			fflush(stderr);
+
+			snprintf(boot0, sizeof(boot0), "%s", user_io_make_filepath(home, "boot0.rom"));
+			snprintf(boot1, sizeof(boot1), "%s", user_io_make_filepath(home, "boot1.rom"));
+
+			fprintf(stderr, "Z386: boot0 path = %s\n", boot0);
+			fprintf(stderr, "Z386: boot1 path = %s\n", boot1);
+			fflush(stderr);
+
+			if (FileOpen(&bios_file, boot0, 1))
+			{
+				fprintf(stderr, "Z386: boot0 size probe = %llu bytes\n", (unsigned long long)bios_file.size);
+				if (bios_file.size > 65536) bios_offset = 0x20000;
+				FileClose(&bios_file);
+			}
+			else
+			{
+				fprintf(stderr, "Z386: boot0 size probe failed\n");
+			}
+
+			fprintf(stderr, "Z386: selected boot0 ioctl offset = 0x%05X\n", bios_offset);
+			fflush(stderr);
+
+			user_io_set_aindex(0);
+			fprintf(stderr, "Z386: addon index set to 0\n");
+			fflush(stderr);
+			ProgressMessage(0, 0, 0, 0);
+			load_rom_z386(boot1, 0x00000);
+			load_rom_z386(boot0, bios_offset);
+			fprintf(stderr, "Z386: ROM uploads done, checking status\n");
+			fflush(stderr);
+			user_io_check_status_change();
+			user_io_set_download(0);
+			fprintf(stderr, "Z386: download closed\n");
+			fflush(stderr);
+			ProgressMessage(0, 0, 0, 0);
+		}
+		else
+		{
+			// PC-DOS/MS-DOS/Win3.x/Win9x recognize 0xFF as free memory (UMA),
+			// otherwise it can be incorrectly interpreted as used by Option RAM (non-free).
+			mem_set(0xA0000, 0xFF, 0x60000); // Fill UMA (640 kb - 1 Mb) with 0xFF
+			mem_set(0xA0000, 0x00, 0x20000); // Clear Video RAM
+			mem_set(0xCE000, 0x00, 0x2000);  // Clear shr_rgn
+			load_rom(user_io_make_filepath(home, "boot1.rom"), 0xC0000); // Video BIOS ROM
+			load_rom(user_io_make_filepath(home, "boot0.rom"), 0xF0000); // BIOS ROM
+		}
 	}
 
 	uint16_t cfg = ide_check();
@@ -568,6 +661,15 @@ void x86_init()
 	// memcfg 0: 256MB
 	// memcfg 1:  16MB
 	uint8_t memcfg = is_x86() ? user_io_status_get("[11]") : 1;
+	uint16_t ext_mem_kb = memcfg ? 0x3C00 : 0xFC00;
+	uint16_t ext_above_16m_64k = memcfg ? 0x0000 : 0x0E80;
+
+	if (is_z386())
+	{
+		// Match the current z386/Tang default: 4MB total, 3MB extended.
+		ext_mem_kb = 0x0C00;
+		ext_above_16m_64k = 0x0000;
+	}
 
 	unsigned char translate_mode = 1; //LBA
 	translate_mode = (translate_mode << 6) | (translate_mode << 4) | (translate_mode << 2) | translate_mode;
@@ -607,8 +709,8 @@ void x86_init()
 		0x4D, //0x14: equipment bits
 		0x80, //0x15: base memory in 1k LSB
 		0x02, //0x16: base memory in 1k MSB
-		0x00, //0x17: memory size above 1m in 1k LSB
-		(uint8_t)(memcfg ? 0x3C : 0xFC), //0x18: memory size above 1m in 1k MSB
+		(uint8_t)(ext_mem_kb & 0xFF), //0x17: memory size above 1m in 1k LSB
+		(uint8_t)(ext_mem_kb >> 8), //0x18: memory size above 1m in 1k MSB
 		(uint8_t)(strlen(config.img_name[2]) ? 0x2F : 0x00), //0x19: extended hd 0 type; type 47d (unused)
 		(uint8_t)(strlen(config.img_name[3]) ? 0x2F : 0x00), //0x1A: extended hd 1 type; type 47d (unused)
 
@@ -637,14 +739,14 @@ void x86_init()
 		0x00, //0x2E: checksum MSB
 		0x00, //0x2F: checksum LSB
 
-		0x00, //0x30: memory size above 1m in 1k LSB
-		(uint8_t)(memcfg ? 0x3C : 0xFC), //0x31: memory size above 1m in 1k MSB
+		(uint8_t)(ext_mem_kb & 0xFF), //0x30: memory size above 1m in 1k LSB
+		(uint8_t)(ext_mem_kb >> 8), //0x31: memory size above 1m in 1k MSB
 
 		0x20, //0x32: IBM century
 		0x00, //0x33: ?
 
-		(uint8_t)(memcfg ? 0x00 : 0x80), //0x34: memory size above 16m in 64k LSB
-		(uint8_t)(memcfg ? 0x00 : 0x0E), //0x35: memory size above 16m in 64k MSB; 256-8 MB
+		(uint8_t)(ext_above_16m_64k & 0xFF), //0x34: memory size above 16m in 64k LSB
+		(uint8_t)(ext_above_16m_64k >> 8), //0x35: memory size above 16m in 64k MSB
 
 		0x00, //0x36: ?
 		0x20, //0x37: IBM PS/2 century

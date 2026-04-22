@@ -211,8 +211,15 @@ char is_menu()
 static int is_x86_type = 0;
 char is_x86()
 {
-	if (!is_x86_type) is_x86_type = strcasecmp(orig_name, "AO486") ? 2 : 1;
+	if (!is_x86_type) is_x86_type = (strcasecmp(orig_name, "AO486") && strcasecmp(orig_name, "Z386")) ? 2 : 1;
 	return (is_x86_type == 1);
+}
+
+static int is_z386_type = 0;
+char is_z386()
+{
+	if (!is_z386_type) is_z386_type = strcasecmp(orig_name, "Z386") ? 2 : 1;
+	return (is_z386_type == 1);
 }
 
 static int is_snes_type = 0;
@@ -408,6 +415,7 @@ void user_io_read_core_name()
 {
 	is_menu_type = 0;
 	is_x86_type  = 0;
+	is_z386_type = 0;
 	is_no_type   = 0;
 	is_snes_type = 0;
 	is_sgb_type = 0;
@@ -440,6 +448,7 @@ void user_io_read_core_name()
 	if (ovr_name[0]) strcpy(core_name, ovr_name);
 	else if (orig_name[0]) strcpy(core_name, p);
 
+	printf("CONF_STR[0] = \"%s\"\n", orig_name);
 	printf("Core name is \"%s\"\n", core_name);
 }
 
@@ -1412,17 +1421,30 @@ void user_io_init(const char *path, const char *xml)
 	if (core_type == CORE_TYPE_8BIT)
 	{
 		printf("Identified 8BIT core");
+		printf("DEBUG: before UIO_SET_MEMSZ\n");
+		fflush(stdout);
 		spi_uio_cmd16(UIO_SET_MEMSZ, sdram_sz(-1));
+		printf("DEBUG: after UIO_SET_MEMSZ\n");
+		fflush(stdout);
 
 		// send a reset
+		printf("DEBUG: before user_io_status_set([0],1)\n");
+		fflush(stdout);
 		user_io_status_set("[0]", 1);
+		printf("DEBUG: after user_io_status_set([0],1)\n");
+		fflush(stdout);
 	}
 	else if (core_type == CORE_TYPE_SHARPMZ)
 	{
 		user_io_set_core_name("sharpmz");
 	}
 
+	printf("DEBUG: before user_io_read_confstr()\n");
 	user_io_read_confstr();
+	printf("DEBUG: after user_io_read_confstr()\n");
+	char *dbg_conf0 = user_io_get_confstr(0);
+	if (dbg_conf0) printf("DEBUG: confstr[0] = \"%s\"\n", dbg_conf0);
+	else printf("DEBUG: confstr[0] is missing\n");
 	user_io_read_core_name();
 
 	if ((fpga_get_buttons() & BUTTON_OSD) && is_menu())
@@ -1479,6 +1501,9 @@ void user_io_init(const char *path, const char *xml)
 
 	user_io_send_buttons(1);
 	if (xml && isXmlName(xml) == 2) mgl_parse(xml);
+	fprintf(stderr, "DEBUG: before core_type switch core_type=%u core_name=\"%s\" is_x86=%d is_z386=%d\n",
+		core_type, user_io_get_core_name(), is_x86(), is_z386());
+	fflush(stderr);
 
 	switch (core_type)
 	{
@@ -1494,8 +1519,12 @@ void user_io_init(const char *path, const char *xml)
 		break;
 
 	case CORE_TYPE_8BIT:
+		fprintf(stderr, "DEBUG: in CORE_TYPE_8BIT branch\n");
+		fflush(stderr);
 		// try to load config
 		name = user_io_create_config_name(1);
+		fprintf(stderr, "DEBUG: config name probe = \"%s\"\n", name);
+		fflush(stderr);
 		if (strlen(name) > 0)
 		{
 			if (!is_st() && !is_minimig())
@@ -1512,10 +1541,16 @@ void user_io_init(const char *path, const char *xml)
 					memset(cur_status, 0, sizeof(cur_status));
 				}
 
+				fprintf(stderr, "DEBUG: before config user_io_status_set([0],1)\n");
+				fflush(stderr);
 				user_io_status_set("[0]", 1);
+				fprintf(stderr, "DEBUG: after config user_io_status_set([0],1)\n");
+				fflush(stderr);
 			}
 
 			name = user_io_create_config_name();
+			fprintf(stderr, "DEBUG: runtime config name = \"%s\"\n", name);
+			fflush(stderr);
 			if (is_st())
 			{
 				tos_config_load(0);
@@ -1541,8 +1576,14 @@ void user_io_init(const char *path, const char *xml)
 				}
 				else if (is_x86() || is_pcxt())
 				{
+					fprintf(stderr, "DEBUG: before x86_config_load()\n");
+					fflush(stderr);
 					x86_config_load();
+					fprintf(stderr, "DEBUG: before x86_init()\n");
+					fflush(stderr);
 					x86_init();
+					fprintf(stderr, "DEBUG: after x86_init()\n");
+					fflush(stderr);
 				}
 				else if (is_archie())
 				{
@@ -1668,6 +1709,11 @@ void user_io_init(const char *path, const char *xml)
 		{
 			Info(cfg_errs, 5000);
 			sleep(5);
+		}
+		else
+		{
+			fprintf(stderr, "DEBUG: empty config name, skipping CORE_TYPE_8BIT init path\n");
+			fflush(stderr);
 		}
 		break;
 	}
@@ -2534,7 +2580,7 @@ int user_io_use_cheats()
 	return use_cheats;
 }
 
-static void check_status_change()
+void user_io_check_status_change()
 {
 	static u_int8_t last_status_change = 0;
 	char stchg = spi_uio_cmd_cont(UIO_GET_STATUS);
@@ -2609,7 +2655,7 @@ int user_io_file_tx_a(const char* name, uint16_t index)
 	}
 
 	// check if core requests some change while downloading
-	check_status_change();
+	user_io_check_status_change();
 
 	printf("Done.\n");
 	FileClose(&f);
@@ -2844,7 +2890,7 @@ int user_io_file_tx(const char* name, unsigned char index, char opensave, char m
 	}
 
 	// check if core requests some change while downloading
-	check_status_change();
+	user_io_check_status_change();
 
 	printf("Done.\n");
 	printf("CRC32: %08X\n", file_crc);
@@ -3123,7 +3169,7 @@ void user_io_poll()
 
 	if (core_type == CORE_TYPE_8BIT && !is_menu())
 	{
-		check_status_change();
+		user_io_check_status_change();
 	}
 
 	// sd card emulation
