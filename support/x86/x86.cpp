@@ -334,45 +334,6 @@ static int load_rom(const char* name, uint32_t mem_offset)
 	return 1;
 }
 
-static int load_rom_z386(const char* name, uint32_t ioctl_offset)
-{
-	fileTYPE f = {};
-	static uint8_t buf[4096];
-
-	fprintf(stderr, "BIOS: %s -> ioctl0 @ 0x%05X\n", name, ioctl_offset);
-	fflush(stderr);
-
-	if (!FileOpen(&f, name, 1))
-	{
-		fprintf(stderr, "BIOS: failed to open %s\n", name);
-		fflush(stderr);
-		return 0;
-	}
-
-	unsigned long bytes2send = f.size;
-	unsigned long size = bytes2send;
-
-	fprintf(stderr, "BIOS: opened %s size=%lu bytes\n", name, size);
-	fflush(stderr);
-
-	user_io_set_download(1, ioctl_offset);
-
-	while (bytes2send)
-	{
-		uint32_t chunk = (bytes2send > sizeof(buf)) ? sizeof(buf) : bytes2send;
-
-		FileReadAdv(&f, buf, chunk);
-		user_io_file_tx_data(buf, chunk);
-		ProgressMessage("Loading", f.name, size - bytes2send, size);
-		bytes2send -= chunk;
-	}
-
-	FileClose(&f);
-	fprintf(stderr, "BIOS: upload complete for %s\n", name);
-	fflush(stderr);
-	return 1;
-}
-
 #define FDD_TYPE_NONE 0
 #define FDD_TYPE_160  1
 #define FDD_TYPE_180  2
@@ -590,7 +551,7 @@ void x86_init()
 			char boot0[1024];
 			char boot1[1024];
 			fileTYPE bios_file = {};
-			uint32_t bios_offset = 0x30000;
+			uint32_t bios_offset = 0xF0000;
 
 			fprintf(stderr, "Z386: entering x86_init()\n");
 			fprintf(stderr, "Z386: HomeDir = %s\n", home ? home : "(null)");
@@ -606,7 +567,7 @@ void x86_init()
 			if (FileOpen(&bios_file, boot0, 1))
 			{
 				fprintf(stderr, "Z386: boot0 size probe = %llu bytes\n", (unsigned long long)bios_file.size);
-				if (bios_file.size > 65536) bios_offset = 0x20000;
+				if (bios_file.size > 65536) bios_offset = 0xE0000;
 				FileClose(&bios_file);
 			}
 			else
@@ -614,22 +575,18 @@ void x86_init()
 				fprintf(stderr, "Z386: boot0 size probe failed\n");
 			}
 
-			fprintf(stderr, "Z386: selected boot0 ioctl offset = 0x%05X\n", bios_offset);
+			fprintf(stderr, "Z386: selected boot0 DDR offset = 0x%05X\n", bios_offset);
 			fflush(stderr);
 
-			user_io_set_aindex(0);
-			fprintf(stderr, "Z386: addon index set to 0\n");
-			fflush(stderr);
-			ProgressMessage(0, 0, 0, 0);
-			load_rom_z386(boot1, 0x00000);
-			load_rom_z386(boot0, bios_offset);
-			fprintf(stderr, "Z386: ROM uploads done, checking status\n");
-			fflush(stderr);
-			user_io_check_status_change();
-			user_io_set_download(0);
-			fprintf(stderr, "Z386: download closed\n");
-			fflush(stderr);
-			ProgressMessage(0, 0, 0, 0);
+			// Match the ao486 ROM staging model: Main_MiSTer writes the ROM
+			// images into the shared DDR window and the FPGA copies them into
+			// its SDRAM shadow after every reset.
+			mem_set(0xA0000, 0xFF, 0x60000);
+			mem_set(0xA0000, 0x00, 0x20000);
+			mem_set(0xCE000, 0x00, 0x2000);
+			load_rom(boot1, 0xC0000);
+			load_rom(boot0, bios_offset);
+			fprintf(stderr, "Z386: ROMs staged in DDR\n");
 		}
 		else
 		{
