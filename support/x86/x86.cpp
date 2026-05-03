@@ -860,10 +860,20 @@ void x86_config_save()
 void x86_config_load()
 {
 	static x86_config tmp;
+	x86_config selected = config;
 	memset(&config, 0, sizeof(config));
 	if (FileLoadConfig(get_config_name(), &tmp, sizeof(tmp)) && (tmp.ver == CFG_VER))
 	{
 		memcpy(&config, &tmp, sizeof(config));
+	}
+
+	for (int i = 0; i < 6; i++)
+	{
+		if (selected.img_name[i][0])
+		{
+			strncpy(config.img_name[i], selected.img_name[i], sizeof(config.img_name[i]) - 1);
+			config.img_name[i][sizeof(config.img_name[i]) - 1] = 0;
+		}
 	}
 }
 
