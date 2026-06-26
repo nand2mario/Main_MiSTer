@@ -623,9 +623,18 @@ void x86_init()
 
 	if (is_z386())
 	{
-		// Match the current z386/Tang default: 4MB total, 3MB extended.
-		ext_mem_kb = 0x0C00;
-		ext_above_16m_64k = 0x0000;
+		// OSD "RAM Size" (status[46:45]): 0=16MB, 1=32MB, 2=64MB, 3=128MB.
+		// z386 uses SDRAM (max 128MB on a 2x64MB module). For every size >=16MB
+		// the 1..16MB window is full (15MB = 0x3C00 KB) and the remainder goes in
+		// the "above 16MB in 64KB units" CMOS field as (size_MB - 16) * 16.
+		ext_mem_kb = 0x3C00;
+		switch (user_io_status_get("[46:45]"))
+		{
+		default: ext_above_16m_64k = 0x0000; break; //  16MB
+		case 1:  ext_above_16m_64k = 0x0100; break; //  32MB: (32-16)*16  = 256
+		case 2:  ext_above_16m_64k = 0x0300; break; //  64MB: (64-16)*16  = 768
+		case 3:  ext_above_16m_64k = 0x0700; break; // 128MB: (128-16)*16 = 1792
+		}
 	}
 
 	unsigned char translate_mode = 1; //LBA
