@@ -211,14 +211,15 @@ char is_menu()
 static int is_x86_type = 0;
 char is_x86()
 {
-	if (!is_x86_type) is_x86_type = (strcasecmp(orig_name, "AO486") && strcasecmp(orig_name, "Z386")) ? 2 : 1;
+	if (!is_x86_type) is_x86_type = (strcasecmp(orig_name, "AO486") && strcasecmp(orig_name, "Z386") && strcasecmp(orig_name, "Z486")) ? 2 : 1;
 	return (is_x86_type == 1);
 }
 
 static int is_z386_type = 0;
 char is_z386()
 {
-	if (!is_z386_type) is_z386_type = strcasecmp(orig_name, "Z386") ? 2 : 1;
+	// Z486 retains the Z386-specific ROM staging and HPS-backed disk interface.
+	if (!is_z386_type) is_z386_type = (strcasecmp(orig_name, "Z386") && strcasecmp(orig_name, "Z486")) ? 2 : 1;
 	return (is_z386_type == 1);
 }
 
